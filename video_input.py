@@ -72,15 +72,13 @@ class BaslerCameraVideoInput(IVideoInput):
                 frame = grab_result.Array
                 if self.rotate_code != -1:
                     frame = cv.rotate(frame, self.rotate_code)
-                yield True, frame
-            else:
-                return False, 0
+                yield frame
 
     def get_fps(self):
         grab_result = self.camera.RetrieveResult(5000, pylon.TimeoutHandling_ThrowException)
-        t1 = grab_result.Timestamp
+        t1 = grab_result.TimeStamp
         grab_result = self.camera.RetrieveResult(5000, pylon.TimeoutHandling_ThrowException)
-        t2 = grab_result.Timestamp
+        t2 = grab_result.TimeStamp
         return 1000000000 / (t2 - t1) / 8
 
     def release(self):

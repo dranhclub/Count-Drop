@@ -15,14 +15,15 @@ y0 = 0.007  # initial height
 H = 0.06  # real height of working area
 ratio = 0
 g = 9.8  # gravity
-offset_y = 0
-record = False
+offset_y = 60
+record = True
 
-video_writer = cv.VideoWriter()
+video_writer_1 = cv.VideoWriter()  # input video
+video_writer_2 = cv.VideoWriter()  # output video
 
 
 def init(background, width, height, fps):
-    global bg, FRAME_HEIGHT, FRAME_WIDTH, FPS, ratio, record, video_writer
+    global bg, FRAME_HEIGHT, FRAME_WIDTH, FPS, ratio, record, video_writer_2, video_writer_1
     bg = background
     FRAME_WIDTH = width
     FRAME_HEIGHT = height
@@ -32,10 +33,12 @@ def init(background, width, height, fps):
     if record:
         d = str(datetime.now())
         d = re.sub(":", "-", d)
-        filename = "video_record/" + d + ".avi"
-        print(filename)
+        filename1 = "video_record/" + d + "-in.avi"
+        filename2 = "video_record/" + d + "-out.avi"
+        print(filename1, filename2)
         codec = cv.VideoWriter_fourcc('M', 'J', 'P', 'G')
-        video_writer = cv.VideoWriter(filename, codec, 10, (FRAME_WIDTH, FRAME_HEIGHT))
+        video_writer_1 = cv.VideoWriter(filename1, codec, 10, (FRAME_WIDTH, FRAME_HEIGHT))
+        video_writer_2 = cv.VideoWriter(filename2, codec, 10, (FRAME_WIDTH, FRAME_HEIGHT))
 
     print("Initialize: ")
     print("WIDTH={}, HEIGHT={}".format(FRAME_WIDTH, FRAME_HEIGHT))
@@ -69,7 +72,7 @@ def thresh_binary(frame, background):
     diff = cv.GaussianBlur(diff, (5, 5), 0)
     diff = cv.medianBlur(diff, 5)
     ret, thresh = cv.threshold(diff, 15, 255, cv.THRESH_BINARY)
-    thresh = cv.morphologyEx(thresh, cv.MORPH_OPEN, cv.getStructuringElement(cv.MORPH_ELLIPSE, (10, 10)))
+    thresh = cv.morphologyEx(thresh, cv.MORPH_OPEN, cv.getStructuringElement(cv.MORPH_ELLIPSE, (15, 15)))
     return thresh
 
 
@@ -129,32 +132,38 @@ def start_count(video_source):
     frame_count = 0
     particles = []
     for frame in video_source.frames():
+        if record:
+            global video_writer_1
+            video_writer_1.write(cv.cvtColor(frame, cv.COLOR_GRAY2BGR))
+
         frame_count += 1
         thresh = thresh_binary(frame, bg)
         cv.imshow("thresh", thresh)
-        contours, hierarchy = cv.findContours(thresh, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE)
-        # cv.drawContours(frame, contours, -1, (0, 255, 0), 1)
+        contours, _ = cv.findContours(thresh, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE)
+        contours = list(filter(lambda c: offset_y <= get_centroid(c)[1] <= FRAME_HEIGHT - offset_y, contours))
+        cv.drawContours(frame, contours, -1, (0, 255, 0), 1)
         update_particles(contours, particles)
 
         frame = cv.cvtColor(frame, cv.COLOR_GRAY2BGR)
         frame = draw_info(frame, particles, frame_count)
         cv.imshow("Counting", frame)
         if record:
-            global video_writer
-            video_writer.write(frame)
+            global video_writer_2
+            video_writer_2.write(frame)
 
         if cv.waitKey(1) == 27:
             break
 
-    video_writer.release()
+    video_writer_1.release()
+    video_writer_2.release()
 
     return len(particles)
 
 
 if __name__ == "__main__":
-    # video_source = BaslerCameraVideoInput(cv.ROTATE_90_COUNTERCLOCKWISE)
-    video_source = RawVideoInput("video_input/Basler_acA1300-30gc__21472292__20210305_164914214 (2).avi",
-                                 cv.ROTATE_90_COUNTERCLOCKWISE)
+    video_source = BaslerCameraVideoInput(cv.ROTATE_90_COUNTERCLOCKWISE)
+    # video_source = RawVideoInput("video_input/Basler_acA1300-30gc__21472292__20210305_164914214 (2).avi",
+    #                              cv.ROTATE_90_COUNTERCLOCKWISE)
 
     # Wait for init
     for frame in video_source.frames():
@@ -170,4 +179,3 @@ if __name__ == "__main__":
 
     video_source.release()
     cv.destroyAllWindows()
-
