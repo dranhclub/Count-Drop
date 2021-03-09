@@ -112,3 +112,8 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
+
+video_record/
+video_input/
+*.mp4
+*.avi

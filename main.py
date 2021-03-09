@@ -2,28 +2,40 @@ import cv2 as cv
 from pypylon import pylon
 import math
 from particle import Particle
+from datetime import datetime
+import re
+from video_input import BaslerCameraVideoInput, RawVideoInput
 
 bg = None
 FRAME_WIDTH = 0
 FRAME_HEIGHT = 0
 FPS = 0
 
-y0 = 0.003
-H = 0.06  # 75mm
+y0 = 0.007  # initial height
+H = 0.06  # real height of working area
 ratio = 0
 g = 9.8  # gravity
 offset_y = 0
-repeat = False
+record = False
+
+video_writer = cv.VideoWriter()
 
 
-def init(grabResult, fps):
-    global bg, FRAME_HEIGHT, FRAME_WIDTH, FPS, ratio
-    bg = grabResult.Array
-    bg = cv.rotate(bg, cv.ROTATE_90_COUNTERCLOCKWISE)
-    FRAME_WIDTH = grabResult.Height
-    FRAME_HEIGHT = grabResult.Width
+def init(background, width, height, fps):
+    global bg, FRAME_HEIGHT, FRAME_WIDTH, FPS, ratio, record, video_writer
+    bg = background
+    FRAME_WIDTH = width
+    FRAME_HEIGHT = height
     FPS = fps
     ratio = FRAME_HEIGHT / H
+
+    if record:
+        d = str(datetime.now())
+        d = re.sub(":", "-", d)
+        filename = "video_record/" + d + ".avi"
+        print(filename)
+        codec = cv.VideoWriter_fourcc('M', 'J', 'P', 'G')
+        video_writer = cv.VideoWriter(filename, codec, 10, (FRAME_WIDTH, FRAME_HEIGHT))
 
     print("Initialize: ")
     print("WIDTH={}, HEIGHT={}".format(FRAME_WIDTH, FRAME_HEIGHT))
@@ -32,63 +44,32 @@ def init(grabResult, fps):
     print("ratio=", ratio)
     print("g=", g)
     print("offset_y=", offset_y)
-    print("repeat=", repeat)
     print("FPS=", FPS)
+    print("record=", record)
 
     cv.imshow("Background captured", bg)
 
-camera = None
 
-try:
-    camera = pylon.InstantCamera(pylon.TlFactory.GetInstance().CreateFirstDevice())
-    camera.Open()
-except:
-    exit("No device is available")
-
-
-def wait_for_init():
-    camera.StartGrabbing()
-    timestamp = 0
-    while camera.IsGrabbing():
-        grabResult = camera.RetrieveResult(5000, pylon.TimeoutHandling_ThrowException)
-        if grabResult.GrabSucceeded():
-            # calc fps
-            t2 = grabResult.TimeStamp
-            fps = 1000000000 / (t2 - timestamp) / 8
-            timestamp = t2
-
-            # get image
-            img = grabResult.Array
-            img = cv.rotate(img, cv.ROTATE_90_COUNTERCLOCKWISE)
-            cv.imshow("Counting", img)
-
-            # wait key
-            if cv.waitKey(1) == ord('g'):
-                init(grabResult, fps)
-                break
-
-    grabResult.Release()
-    camera.StopGrabbing()
-
-
-def next_y(y):
-    y = y / ratio
-    t1 = -H + math.sqrt(H * H + 2 * y / g)
+def next_y(y1):
+    y1 = y1 / ratio
+    v0 = math.sqrt(2 * y0 * g)
+    t1 = (-v0 + math.sqrt(v0 * v0 + 2 * g * y1)) / g
     t2 = t1 + 1 / FPS
-    epsilon = 0.8 / FPS
-    y2_left = (g * y0 * t2 + 0.5 * g * (t2 - epsilon) ** 2) * ratio
-    y2_right = (g * y0 * t2 + 0.5 * g * (t2 + epsilon) ** 2) * ratio
+    epsilon = 0.3 / FPS
+    t2_left = t2 - epsilon
+    t2_right = t2 + epsilon
+    y2_left = (v0 * t2_left + 0.5 * g * t2_left ** 2) * ratio
+    y2_right = (v0 * t2_right + 0.5 * g * t2_right ** 2) * ratio
     return int(y2_left), int(y2_right)
 
 
 def thresh_binary(frame, background):
     # frame = cv.cvtColor(frame, cv.COLOR_BGR2GRAY)
-    frame = cv.rotate(frame, cv.ROTATE_90_COUNTERCLOCKWISE)
     diff = cv.absdiff(frame, background)
     diff = cv.GaussianBlur(diff, (5, 5), 0)
     diff = cv.medianBlur(diff, 5)
     ret, thresh = cv.threshold(diff, 15, 255, cv.THRESH_BINARY)
-    thresh = cv.morphologyEx(thresh, cv.MORPH_OPEN, cv.getStructuringElement(cv.MORPH_ELLIPSE, (15, 15)))
+    thresh = cv.morphologyEx(thresh, cv.MORPH_OPEN, cv.getStructuringElement(cv.MORPH_ELLIPSE, (10, 10)))
     return thresh
 
 
@@ -100,11 +81,10 @@ def get_centroid(contour):
 
 
 def update_particles(contours, old_particles):
-    centroids = [get_centroid(c) for c in contours]
     mask = [False for i in range(0, len(contours))]
     for particle in old_particles:
         if particle.onscreen:
-            particle.track(contours, centroids, next_y, mask)
+            particle.track(contours, next_y, mask)
     for i, m in enumerate(mask):
         if not m:
             new_particle = Particle(contours[i])
@@ -145,40 +125,49 @@ def draw_info(frame, particles, frame_count):
     return frame
 
 
-def start_count():
+def start_count(video_source):
     frame_count = 0
     particles = []
+    for frame in video_source.frames():
+        frame_count += 1
+        thresh = thresh_binary(frame, bg)
+        cv.imshow("thresh", thresh)
+        contours, hierarchy = cv.findContours(thresh, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE)
+        # cv.drawContours(frame, contours, -1, (0, 255, 0), 1)
+        update_particles(contours, particles)
 
-    camera.StartGrabbing()
-    while camera.IsGrabbing():
-        grab_result = camera.RetrieveResult(5000, pylon.TimeoutHandling_ThrowException)
-        if grab_result.GrabSucceeded():
-            frame = grab_result.Array
-            frame_count += 1
-            thresh = thresh_binary(frame, bg)
-            cv.imshow("thresh", thresh)
-            contours, hierarchy = cv.findContours(thresh, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE)
-            # cv.drawContours(frame, contours, -1, (0, 255, 0), 1)
+        frame = cv.cvtColor(frame, cv.COLOR_GRAY2BGR)
+        frame = draw_info(frame, particles, frame_count)
+        cv.imshow("Counting", frame)
+        if record:
+            global video_writer
+            video_writer.write(frame)
 
-            update_particles(contours, particles)
-            frame = cv.cvtColor(frame, cv.COLOR_GRAY2BGR)
-            frame = draw_info(frame, particles, frame_count)
-            cv.imshow("Counting", frame)
         if cv.waitKey(1) == 27:
             break
 
-    grab_result.Release()
-    camera.StopGrabbing()
+    video_writer.release()
 
     return len(particles)
 
 
-wait_for_init()
-count = start_count()
-camera.Close()
-cv.destroyAllWindows()
+if __name__ == "__main__":
+    # video_source = BaslerCameraVideoInput(cv.ROTATE_90_COUNTERCLOCKWISE)
+    video_source = RawVideoInput("video_input/Basler_acA1300-30gc__21472292__20210305_164914214 (2).avi",
+                                 cv.ROTATE_90_COUNTERCLOCKWISE)
 
-print("***************************************")
-print("Count = ", count)
+    # Wait for init
+    for frame in video_source.frames():
+        cv.imshow("Counting", frame)
+        if cv.waitKey(0) == ord('g'):
+            init(frame, video_source.width, video_source.height, video_source.get_fps())
+            break
 
+    # Start counting
+    count = start_count(video_source)
+    print("***************************************")
+    print("Count = ", count)
+
+    video_source.release()
+    cv.destroyAllWindows()
 
